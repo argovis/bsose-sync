@@ -80,7 +80,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // collection objects
     let bsose = client.database("argo").collection("bsoseX");
-    let bsose_meta = client.database("argo").collection("bsoseMetaX");
+    //let bsose_meta = client.database("argo").collection("bsoseMetaX");
   
     // Rust structs to serialize time properly
     #[derive(Serialize, Deserialize, Debug)]
@@ -139,7 +139,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for timeidx in 0..n_timesteps {
         timeseries.push(bson::DateTime::parse_rfc3339_str((t0 + Duration::seconds(time.value::<i64, _>(timeidx)?)).to_rfc3339().replace("+00:00", "Z")).unwrap());
     }
-
+/*
     for latidx in 0..lat.len() {
         for lonidx in 0..lon.len() {
             let lon_val = tidylon(lon.value::<f64, _>([lonidx])?);
@@ -177,13 +177,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             bsose_meta.insert_one(metadata_doc.clone(), None).await?;
         }
     }
-
-    for latidx in 0..lat.len() {
+*/
+    for latidx in 310..588 { //588 //lat.len() {
         let lat_val = lat.value::<f64, _>([latidx])?;
-        let mut docs = Vec::new(); // collect all the docs for this latitude, and write all at once.
         for lonidx in 0..lon.len() {
             let lon_val = tidylon(lon.value::<f64, _>([lonidx])?);
             // construct data documents, one timeseries per lon/lat/level triple
+            let mut docs = Vec::new(); // collect all the docs for this level, and write all at once.
             for levelidx in 0..depth.len() {
                 let basin = find_basin(&basins, lon_val, lat_val);
                 let mut track03_profile = Vec::new();
@@ -208,8 +208,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 };
                 docs.push(data);
             }
+            bsose.insert_many(docs, None).await?;
         }
-        bsose.insert_many(docs, None).await?;
     }
 
     Ok(())
