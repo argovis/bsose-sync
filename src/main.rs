@@ -9,6 +9,7 @@ use mongodb::bson::{doc};
 use mongodb::bson::DateTime;
 use mongodb::{Client, options::{ClientOptions, ResolverConfig}};
 use serde::{Deserialize, Serialize};
+use mongodb::bson::Bson;
 
 fn tidylon(longitude: f64) -> f64{
     // map longitude on [0,360] to [-180,180], required for mongo indexing
@@ -66,6 +67,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // setup /////////////////////////////////////////////////
 
+    let args: Vec<String> = env::args().collect();
+    let filename = &args[1];
+    let dv = &args[2];
+    let lolat = args[3].parse::<usize>()?;
+    let hilat = args[4].parse::<usize>()?;
+
     // mongodb setup
     // Load the MongoDB connection string from an environment variable:
     let client_uri =
@@ -78,22 +85,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
           .await?;
     let client = Client::with_options(options)?; 
 
-    // collection objects
-    let bsose = client.database("argo").collection("bsoseX");
-    //let bsose_meta = client.database("argo").collection("bsoseMetaX");
-  
-    // Rust structs to serialize time properly
-    #[derive(Serialize, Deserialize, Debug)]
+    // Rust structs to describe documents in the "bsose" collections
+    #[derive(Serialize, Deserialize, Debug, Clone)]
     struct Sourcedoc {
         source: Vec<String>,
         file: String
     }
 
-    #[derive(Serialize, Deserialize, Debug)]
+    #[derive(Serialize, Deserialize, Debug, Clone)]
     struct BsoseMetadoc {
         _id: String,
         data_type: String,
-        data_info: (Vec<String>, Vec<String>, Vec<Vec<String>>),
         date_updated_argovis: DateTime,
         timeseries: Vec<DateTime>,
         source: Vec<Sourcedoc>,
@@ -104,11 +106,37 @@ async fn main() -> Result<(), Box<dyn Error>> {
         depth_r0_to_ref_surface: f64
     }
 
+    #[derive(Serialize, Deserialize, Debug, Clone)]
+    struct BsoseDocument {
+        _id: String,
+        metadata: Vec<String>,
+        basin: i32,
+        geolocation: Geolocation,
+        level: f64,
+        data: Vec<Vec<f64>>,
+        data_info: (Vec<String>, Vec<String>, Vec<Vec<String>>),
+        cell_vertical_fraction: f64,
+        sea_binary_mask_at_t_locaiton: bool,
+        ctrl_vector_3d_mask: bool,
+        cell_z_size: f64,
+        reference_density_profile: f64,
+    }
 
-    let file = netcdf::open("data/O2_bsoseI139_2013to2021_5dy.nc")?;
+    #[derive(Serialize, Deserialize, Debug, Clone)]
+    struct Geolocation {
+        #[serde(rename = "type")]
+        location_type: String,
+        coordinates: [f64; 2],
+    }
+
+    // collection objects
+    let bsose = client.database("argo").collection::<BsoseDocument>("bsoseX");
+    //let bsose_meta::<BsoseMetadoc> = client.database("argo").collection::<BsoseMetadoc>("bsoseMetaX");
+  
+    let file = netcdf::open(filename)?;
 
     // basin lookup
-    let basinfile = netcdf::open("data/basinmask_01.nc")?;
+    let basinfile = netcdf::open("/tmp/basinmask_01.nc")?;
     let basins = &basinfile.variable("BASIN_TAG").expect("Could not find variable 'BASIN_TAG'");
 
     // all times recorded as days since Dec 1 2012
@@ -131,7 +159,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let ctrl_vector_3d_mask = &file.variable("maskCtrlC").expect("Could not find variable 'maskCtrlC'");
     let cell_z_size = &file.variable("drF").expect("Could not find variable 'drF'");
     let reference_density_profile = &file.variable("rhoRef").expect("Could not find variable 'rhoRef'");
-    let track03 = &file.variable("TRAC03").expect("Could not find variable 'TRAC03'");
+    let datavar = &file.variable(dv).expect("Could not find data variable");
+    let mut units: String = String::from("");
+    let mut long_name: String = String::from("");
+    if let netcdf::AttrValue::Str(u) = datavar.attribute_value("units").unwrap()? {
+        units = u;
+    }
+    if let netcdf::AttrValue::Str(u) = datavar.attribute_value("long_name").unwrap()? {
+        long_name = u;
+    }
 
     // construct metadata
     let n_timesteps = time.len();
@@ -150,13 +186,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let metadata = BsoseMetadoc {
                 _id: metaid.clone(),
                 data_type: String::from("BSOSE-profile"),
-                data_info: (
-                    vec!(String::from("TRAC03")), 
-                    vec!(String::from("units"), String::from("long_name")),
-                    vec!(
-                        vec!(String::from("mol O/m"), String::from("Dissolved Oxygen concentration"))
-                    )
-                ),
                 date_updated_argovis: DateTime::now(),
                 timeseries: timeseries.clone(),
                 source: vec!(
@@ -178,37 +207,58 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 */
-    for latidx in 310..588 { //588 //lat.len() {
+
+    for latidx in lolat..hilat { //588 //lat.len() {
         let lat_val = lat.value::<f64, _>([latidx])?;
         for lonidx in 0..lon.len() {
             let lon_val = tidylon(lon.value::<f64, _>([lonidx])?);
             // construct data documents, one timeseries per lon/lat/level triple
-            let mut docs = Vec::new(); // collect all the docs for this level, and write all at once.
-            for levelidx in 0..depth.len() {
+            for levelidx in 0..1 { //0..depth.len() {
                 let basin = find_basin(&basins, lon_val, lat_val);
-                let mut track03_profile = Vec::new();
+                let mut datavar_profile = Vec::new();
                 for timeidx in 0..n_timesteps {
-                    track03_profile.push(track03.value::<f64, _>([timeidx, levelidx, latidx, lonidx])? as f64);
+                    datavar_profile.push(datavar.value::<f64, _>([timeidx, levelidx, latidx, lonidx])? as f64);
                 }
-                let data = doc!{
-                    "_id": format!("{:.3}_{:.3}_{:.3}", lon_val, lat_val, depth.value::<f64, _>(levelidx)?),
-                    "metadata": [format!("{:.3}_{:.3}", lon_val, lat_val)],
-                    "basin": basin,
-                    "geolocation": {
-                        "type": "Point",
-                        "coordinates": [lon_val, lat_val]
-                    },
-                    "level": depth.value::<f64, _>(levelidx)?,
-                    "data": [track03_profile.clone()],
-                    "cell_vertical_fraction": cell_vertical_fraction.value::<f64, _>((levelidx, latidx, lonidx))?,
-                    "sea_binary_mask_at_t_locaiton": sea_binary_mask_at_t_locaiton.value::<i8, _>((levelidx, latidx, lonidx))? != 0,
-                    "ctrl_vector_3d_mask": ctrl_vector_3d_mask.value::<i8, _>((levelidx, latidx, lonidx))? != 0,
-                    "cell_z_size": cell_z_size.value::<f64, _>(levelidx)?,
-                    "reference_density_profile": reference_density_profile.value::<f64, _>(levelidx)?
-                };
-                docs.push(data);
+                let id = format!("{:.3}_{:.3}_{:.3}", lon_val, lat_val, depth.value::<f64, _>(levelidx)?);
+
+                // Check if a document with property "_id" matching id exists
+                let existing_doc = bsose.find_one(doc! { "_id": id.clone() }, None).await?;
+
+                if let Some(mut doc) = existing_doc {
+                    // Append the value of datavar_profile to the existing "data" property
+                    doc.data.push(datavar_profile.clone());
+                    doc.data_info.0.push(dv.to_string());
+                    doc.data_info.2.push(vec!(units.clone(), long_name.clone()));
+                    let filter = doc! {"_id": id };
+                    bsose.replace_one(filter, doc, None).await?;
+                } else {
+                    if !datavar_profile.iter().all(|&x| x == 0.0) {
+                        bsose.insert_one(BsoseDocument {
+                            _id: id,
+                            metadata: vec![format!("{:.3}_{:.3}", lon_val, lat_val)],
+                            basin: basin,
+                            geolocation: Geolocation{
+                                location_type: String::from("Point"),
+                                coordinates: [lon_val, lat_val]
+                            },
+                            level: -1.0 * depth.value::<f64, _>(levelidx)?,
+                            data: vec![datavar_profile.clone()],
+                            data_info: (
+                                vec!(dv.to_string()), 
+                                vec!(String::from("units"), String::from("long_name")),
+                                vec!(
+                                    vec!(units.clone(), long_name.clone())
+                                )
+                            ),
+                            cell_vertical_fraction: cell_vertical_fraction.value::<f64, _>((levelidx, latidx, lonidx))?,
+                            sea_binary_mask_at_t_locaiton: sea_binary_mask_at_t_locaiton.value::<i8, _>((levelidx, latidx, lonidx))? != 0,
+                            ctrl_vector_3d_mask:  ctrl_vector_3d_mask.value::<i8, _>((levelidx, latidx, lonidx))? != 0,
+                            cell_z_size: cell_z_size.value::<f64, _>(levelidx)?,
+                            reference_density_profile: reference_density_profile.value::<f64, _>(levelidx)?
+                        }, None).await?;
+                    }
+                }
             }
-            bsose.insert_many(docs, None).await?;
         }
     }
 
