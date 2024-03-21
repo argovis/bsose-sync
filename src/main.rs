@@ -72,6 +72,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let dv = &args[2];
     let lolat = args[3].parse::<usize>()?;
     let hilat = args[4].parse::<usize>()?;
+    let lolong = args[5].parse::<usize>()?;
+    let hilong = args[6].parse::<usize>()?;
 
     // mongodb setup
     // Load the MongoDB connection string from an environment variable:
@@ -131,7 +133,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // collection objects
     let bsose = client.database("argo").collection::<BsoseDocument>("bsoseX");
-    //let bsose_meta::<BsoseMetadoc> = client.database("argo").collection::<BsoseMetadoc>("bsoseMetaX");
+    //let bsose_meta = client.database("argo").collection::<BsoseMetadoc>("timeseriesMeta");
   
     let file = netcdf::open(filename)?;
 
@@ -176,14 +178,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         timeseries.push(bson::DateTime::parse_rfc3339_str((t0 + Duration::seconds(time.value::<i64, _>(timeidx)?)).to_rfc3339().replace("+00:00", "Z")).unwrap());
     }
 /*
-    for latidx in 0..lat.len() {
-        for lonidx in 0..lon.len() {
+    for latidx in lolat..hilat {
+        for lonidx in lolong..hilong {
             let lon_val = tidylon(lon.value::<f64, _>([lonidx])?);
 
             // construct metadata documents
-            let metaid = format!("{:.3}_{:.3}", lon_val, lat.value::<f64, _>(latidx)?);
-
-            let metadata = BsoseMetadoc {
+            let metaid = format!("{:.3}_{:.3}", lon_val, lat.value::<f64, _>([latidx])?);
+            bsose_meta.insert_one(BsoseMetadoc{
                 _id: metaid.clone(),
                 data_type: String::from("BSOSE-profile"),
                 date_updated_argovis: DateTime::now(),
@@ -199,21 +200,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 depth_r0_to_bottom: depth_r0_to_bottom.value::<f64, _>((latidx, lonidx))?,
                 interior_2d_mask: interior_2d_mask.value::<i8, _>((latidx, lonidx))? != 0,
                 depth_r0_to_ref_surface: depth_r0_to_ref_surface.value::<f64, _>((latidx, lonidx))?,
-            };
+            }, None).await?;
 
-            //println!("{:?}", metadata);
-            let metadata_doc = bson::to_document(&metadata).unwrap();
-            bsose_meta.insert_one(metadata_doc.clone(), None).await?;
         }
     }
 */
 
     for latidx in lolat..hilat { //588 //lat.len() {
         let lat_val = lat.value::<f64, _>([latidx])?;
-        for lonidx in 0..lon.len() {
+        for lonidx in lolong..hilong {
             let lon_val = tidylon(lon.value::<f64, _>([lonidx])?);
             // construct data documents, one timeseries per lon/lat/level triple
-            for levelidx in 0..1 { //0..depth.len() {
+            for levelidx in 0..depth.len() {
                 let basin = find_basin(&basins, lon_val, lat_val);
                 let mut datavar_profile = Vec::new();
                 for timeidx in 0..n_timesteps {
