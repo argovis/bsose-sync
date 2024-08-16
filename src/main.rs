@@ -97,6 +97,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     #[derive(Serialize, Deserialize, Debug, Clone)]
     struct BsoseMetadoc {
         _id: String,
+        latitude: f64,
+        longitude: f64,
         data_type: String,
         date_updated_argovis: DateTime,
         timeseries: Vec<DateTime>,
@@ -132,8 +134,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // collection objects
-    let bsose = client.database("argo").collection::<BsoseDocument>("bsoseX");
-    //let bsose_meta = client.database("argo").collection::<BsoseMetadoc>("timeseriesMeta");
+    let bsose = client.database("argo").collection::<BsoseDocument>("bsose");
+    let bsose_meta = client.database("argo").collection::<BsoseMetadoc>("timeseriesMeta");
   
     let file = netcdf::open(filename)?;
 
@@ -177,15 +179,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     for timeidx in 0..n_timesteps {
         timeseries.push(bson::DateTime::parse_rfc3339_str((t0 + Duration::seconds(time.value::<i64, _>(timeidx)?)).to_rfc3339().replace("+00:00", "Z")).unwrap());
     }
-/*
+
     for latidx in lolat..hilat {
         for lonidx in lolong..hilong {
             let lon_val = tidylon(lon.value::<f64, _>([lonidx])?);
 
             // construct metadata documents
-            let metaid = format!("{:.3}_{:.3}", lon_val, lat.value::<f64, _>([latidx])?);
+            let metaid = format!("{:.3}_{:.3}", lon_val.clone(), lat.value::<f64, _>([latidx])?);
             bsose_meta.insert_one(BsoseMetadoc{
                 _id: metaid.clone(),
+                latitude: lat.value::<f64, _>([latidx])?,
+                longitude: lon_val,
                 data_type: String::from("BSOSE-profile"),
                 date_updated_argovis: DateTime::now(),
                 timeseries: timeseries.clone(),
@@ -204,15 +208,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         }
     }
-*/
 
-    for latidx in lolat..hilat { //588 //lat.len() {
+
+    for latidx in lolat..hilat {
         let lat_val = lat.value::<f64, _>([latidx])?;
         for lonidx in lolong..hilong {
             let lon_val = tidylon(lon.value::<f64, _>([lonidx])?);
             // construct data documents, one timeseries per lon/lat/level triple
+            let basin = find_basin(&basins, lon_val, lat_val);
             for levelidx in 0..depth.len() {
-                let basin = find_basin(&basins, lon_val, lat_val);
                 let mut datavar_profile = Vec::new();
                 for timeidx in 0..n_timesteps {
                     datavar_profile.push(datavar.value::<f64, _>([timeidx, levelidx, latidx, lonidx])? as f64);
