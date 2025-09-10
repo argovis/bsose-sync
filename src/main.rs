@@ -294,7 +294,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if let Some(mut doc) = existing_doc {
                     // if dv already exists in data_info, insert the data at the indexes indicated by inserted_indexes
                     if let Some(dv_idx) = doc.data_info.0.iter().position(|x| x == dv) {
-                        merge_data(&mut doc.data[dv_idx], &datavar_profile, &inserted_indexes);
+                        if merged_times.len() == doc.data[dv_idx].len() {
+                            // overwrite placeholder NANs with new data at the specified indexes
+                            for (i, &idx) in inserted_indexes.iter().enumerate() {
+                                doc.data[dv_idx][idx] = datavar_profile[i];
+                            }
+                        } else {
+                            merge_data(&mut doc.data[dv_idx], &datavar_profile, &inserted_indexes);
+                        }
                     }
                     // if dv does not exist in data_info, add it to data_info and data; entries should be added to data at the indexes indicated by inserted_indexes, with NAN for missing values
                     else {
