@@ -10,6 +10,8 @@ use mongodb::bson::{doc};
 use mongodb::bson::DateTime;
 use mongodb::{Client, options::{ClientOptions, ResolverConfig}};
 use serde::{Deserialize, Serialize};
+use std::process;
+use mongodb::options::{WriteConcern, Acknowledgment, InsertOneOptions, ReplaceOptions};
 
 fn tidylon(longitude: f64) -> f64{
     // map longitude on [0,360] to [-180,180], required for mongo indexing
@@ -113,7 +115,14 @@ fn merge_data(target: &mut Vec<f64>, values: &Vec<f64>, indexes: &Vec<usize>) {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() {
+    if let Err(e) = routine().await {
+        eprintln!("Main routine error: {}", e);
+        process::exit(9000);
+    }
+}
+
+async fn routine() -> Result<(), Box<dyn std::error::Error>> {
 
     // setup /////////////////////////////////////////////////
 
@@ -136,6 +145,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
        ClientOptions::parse_with_resolver_config(&client_uri, ResolverConfig::cloudflare())
           .await?;
     let client = Client::with_options(options)?; 
+
+    // mongodb write concerns - storage backend seems flaky, require full write confirmation or error out:
+    let write_concern = WriteConcern::builder()
+        .w(Acknowledgment::Majority)  // require majority of replicas
+        .journal(true)                // require journaling to disk
+        .build();
+    let insert_opts = InsertOneOptions::builder()
+        .write_concern(write_concern.clone())
+        .build();
+    let replace_opts = ReplaceOptions::builder()
+        .write_concern(write_concern.clone())
+        .build();
 
     // Rust structs to describe documents in the "bsose" collections
     #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -190,8 +211,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let file = netcdf::open(filename)?;
 
     // basin lookup
-    let basinfile = netcdf::open("/tmp/basinmask_01.nc")?;
-    let basins = &basinfile.variable("BASIN_TAG").expect("Could not find variable 'BASIN_TAG'");
+    //let basinfile = netcdf::open("/tmp/basinmask_01.nc")?;
+    //let basins = &basinfile.variable("BASIN_TAG").expect("Could not find variable 'BASIN_TAG'");
 
     // all times recorded as days since Dec 1 2012
     let t0 = Utc.with_ymd_and_hms(2012, 12, 1, 0, 0, 0).unwrap();
@@ -250,7 +271,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if inserted_indexes.len() > 0 {
                     doc.timeseries = merged_times.clone();
                     let filter = doc! {"_id": metaid };
-                    bsose_meta.replace_one(filter, doc, None).await?;
+                    bsose_meta.replace_one(filter, doc, Some(replace_opts.clone())).await?;
                 }
             }
             else{
@@ -276,11 +297,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     depth_r0_to_bottom: depth_r0_to_bottom.value::<f64, _>((latidx, lonidx))?,
                     interior_2d_mask: interior_2d_mask.value::<i8, _>((latidx, lonidx))? != 0,
                     depth_r0_to_ref_surface: depth_r0_to_ref_surface.value::<f64, _>((latidx, lonidx))?,
-                }, None).await?;
+                }, Some(insert_opts.clone())).await?;
             }
 
             // construct data documents, one timeseries per lon/lat/level triple
-            let basin = find_basin(&basins, lon_val.clone(), lat_val.clone());
+            let basin = -1; //find_basin(&basins, lon_val.clone(), lat_val.clone());
             for levelidx in 0..depth.len() {
                 let mut datavar_profile = Vec::new();
                 for timeidx in 0..n_timesteps {
@@ -314,7 +335,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         doc.data_info.2.push(vec!(units.clone(), long_name.clone()));
                     }
                     let filter = doc! {"_id": id };
-                    bsose.replace_one(filter, doc, None).await?;
+                    bsose.replace_one(filter, doc, Some(replace_opts.clone())).await?;
                 } else {
                     if !datavar_profile.iter().all(|&x| x == 0.0) {
 
@@ -347,7 +368,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             //ctrl_vector_3d_mask:  ctrl_vector_3d_mask.value::<i8, _>((levelidx, latidx, lonidx))? != 0,
                             cell_z_size: cell_z_size.value::<f64, _>(levelidx)?,
                             reference_density_profile: reference_density_profile.value::<f64, _>(levelidx)?
-                        }, None).await?;
+                        }, Some(insert_opts.clone())).await?;
                     }
                 }
             }
